@@ -6,7 +6,7 @@ import numpy as np
 import pyproj
 
 from opendrift.elements.elements import LagrangianArray
-from opendrift.readers.basereader import standard_names
+from opendrift.readers.basereader import standard_names, BaseReader
 
 from .environment import Environment
 from .state import State
@@ -299,6 +299,76 @@ class Init(State, Configurable):
         self.elements_scheduled = self.ElementType()
         self.elements_scheduled_time = np.array([])
         self.env = Environment(self.required_variables)
+
+    def add_reader(self, readers, variables=None, first=False):
+
+        """Add one or more readers providing variables used by this model.
+
+        Method may be called subsequently to add more readers
+        for other variables.
+
+        Args:
+            readers: one or more (list) Reader objects.
+
+            variables (optional): list of strings of standard_name of variables to be provided by this/these reader(s).
+            first: Set to True if this reader should be set as first option
+        """
+
+        # Convert any strings to lists, for looping
+        if isinstance(variables, str):
+            variables = [variables]
+        if isinstance(readers, BaseReader):
+            readers = [readers]
+
+        for reader in readers:
+            # Check if input class is of correct type
+            if not isinstance(reader, BaseReader) and \
+                    not hasattr(reader, '_lazyname'):
+                raise TypeError('Please provide Reader object')
+
+            # Check that reader class contains the requested variables
+            if variables is not None:
+                missingVariables = set(variables) - set(reader.variables)
+                if missingVariables:
+                    raise ValueError(
+                        'Reader %s does not provide variables: %s' %
+                        (reader.name, list(missingVariables)))
+
+            # Finally add new reader to list
+            if reader.name in self.readers:
+                # Reader names must be unique, adding integer
+                for n in range(99999):
+                    tmp_name = reader.name + '_%d' % n
+                    if tmp_name not in self.readers:
+                        reader.name = tmp_name
+                        break
+
+            # Horizontal buffer of reader must be large enough to cover
+            # the distance possibly covered by elements within a time step
+            if not reader.is_lazy:
+                reader.set_buffer_size(max_speed=self.max_speed)
+
+            self.readers[reader.name] = reader
+            logger.debug('Added reader ' + reader.name)
+
+            # Add this reader for each of the given variables
+            if reader.is_lazy is False:
+                for variable in variables if variables else reader.variables:
+                    if variable in list(self.priority_list):
+                        if reader.name not in self.priority_list[variable]:
+                            if first is True:
+                                self.priority_list[variable].insert(
+                                    0, reader.name)
+                            else:
+                                self.priority_list[variable].append(reader.name)
+                    else:
+                        self.priority_list[variable] = [reader.name]
+
+        # Remove/hide variables not needed by the current trajectory model
+        for variable in list(self.priority_list):
+            if variable not in self.required_variables:
+                del self.priority_list[variable]
+
 
     def seed_elements(self,
                       lon,
